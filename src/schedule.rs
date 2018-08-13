@@ -1,5 +1,5 @@
 use nom::*;
-use std::str::{self, FromStr};
+use std::str::{self, FromStr, from_utf8};
 use std::collections::BTreeSet;
 use std::collections::Bound::{Included, Unbounded};
 use chrono::{Utc, DateTime, Duration, Datelike, Timelike};
@@ -19,6 +19,11 @@ pub struct Schedule {
     seconds: Seconds,
 }
 
+pub struct Cron {
+  schedule: Schedule,
+  command: String
+}
+
 struct NextAfterQuery<Z> where Z: TimeZone {
   initial_datetime: DateTime<Z>,
   first_month: bool,
@@ -31,7 +36,7 @@ struct NextAfterQuery<Z> where Z: TimeZone {
 impl <Z> NextAfterQuery<Z> where Z: TimeZone {
   fn from(after: &DateTime<Z>) -> NextAfterQuery<Z> {
     NextAfterQuery {
-      initial_datetime: after.clone() + Duration::seconds(1), 
+      initial_datetime: after.clone() + Duration::seconds(1),
       first_month: true,
       first_day_of_month: true,
       first_hour: true,
@@ -44,15 +49,15 @@ impl <Z> NextAfterQuery<Z> where Z: TimeZone {
     // Unlike the other units, years will never wrap around.
     self.initial_datetime.year() as u32
   }
-  
+
   fn month_lower_bound(&mut self) -> Ordinal {
     if self.first_month {
       self.first_month = false;
       return self.initial_datetime.month();
     }
-    Months::inclusive_min() 
+    Months::inclusive_min()
   }
-  
+
   fn reset_month(&mut self) {
     self.first_month = false;
     self.reset_day_of_month();
@@ -63,9 +68,9 @@ impl <Z> NextAfterQuery<Z> where Z: TimeZone {
       self.first_day_of_month = false;
       return self.initial_datetime.day();
     }
-    DaysOfMonth::inclusive_min() 
+    DaysOfMonth::inclusive_min()
   }
-  
+
   fn reset_day_of_month(&mut self) {
     self.first_day_of_month = false;
     self.reset_hour();
@@ -76,9 +81,9 @@ impl <Z> NextAfterQuery<Z> where Z: TimeZone {
       self.first_hour = false;
       return self.initial_datetime.hour();
     }
-    Hours::inclusive_min() 
+    Hours::inclusive_min()
   }
-  
+
   fn reset_hour(&mut self) {
     self.first_hour = false;
     self.reset_minute();
@@ -89,7 +94,7 @@ impl <Z> NextAfterQuery<Z> where Z: TimeZone {
       self.first_minute = false;
       return self.initial_datetime.minute();
     }
-    Minutes::inclusive_min() 
+    Minutes::inclusive_min()
   }
 
   fn reset_minute(&mut self) {
@@ -102,13 +107,13 @@ impl <Z> NextAfterQuery<Z> where Z: TimeZone {
       self.first_second = false;
       return self.initial_datetime.second();
     }
-    Seconds::inclusive_min() 
+    Seconds::inclusive_min()
   }
-  
+
   fn reset_second(&mut self) {
       self.first_second = false;
   }
-} // End of impl 
+} // End of impl
 
 impl Schedule {
     fn from_field_list(fields: Vec<Field>) -> Result<Schedule, Error> {
@@ -187,7 +192,7 @@ impl Schedule {
                                .range(day_of_month_range)
                                .cloned() {
 
-                let hour_start = query.hour_lower_bound(); 
+                let hour_start = query.hour_lower_bound();
                 if !self.hours.ordinals().contains(&hour_start) {
                   query.reset_hour();
                 }
@@ -203,7 +208,7 @@ impl Schedule {
 
                     for minute in self.minutes.ordinals().range(minute_range).cloned() {
 
-                        let second_start = query.second_lower_bound(); 
+                        let second_start = query.second_lower_bound();
                         if !self.seconds.ordinals().contains(&second_start) {
                           query.reset_second();
                         }
@@ -299,6 +304,18 @@ impl FromStr for Schedule {
         use nom::IResult::*;
         match schedule(expression.as_bytes()) {
             Done(_, schedule) => Ok(schedule), // Extract from nom tuple
+            Error(_) => bail!(ErrorKind::Expression("Invalid cron expression.".to_owned())), //TODO: Details
+            Incomplete(_) => bail!(ErrorKind::Expression("Incomplete cron expression.".to_owned())),
+        }
+    }
+}
+
+impl FromStr for Cron {
+    type Err = Error;
+    fn from_str(expression: &str) -> Result<Self, Self::Err> {
+        use nom::IResult::*;
+        match cron(expression.as_bytes()) {
+            Done(_, (schedule, command)) => Ok(Cron {schedule, command: from_utf8(command).unwrap().to_string()}), // Extract from nom tuple
             Error(_) => bail!(ErrorKind::Expression("Invalid cron expression.".to_owned())), //TODO: Details
             Incomplete(_) => bail!(ErrorKind::Expression("Incomplete cron expression.".to_owned())),
         }
@@ -603,6 +620,13 @@ named!(schedule <Schedule>,
   )
 );
 
+named!(cron <&[u8], (Schedule, &[u8]) >,
+  tuple!(
+    schedule,
+    take_until!("\n")
+  )
+);
+
 fn is_leap_year(year: Ordinal) -> bool {
     let by_four = year % 4 == 0;
     let by_hundred = year % 100 == 0;
@@ -823,4 +847,12 @@ fn test_nom_valid_days_of_week_range() {
 fn test_nom_invalid_days_of_week_range() {
     let expression = "* * * * * BEAR-OWL";
     assert!(schedule(expression.as_bytes()).is_err());
+}
+
+#[test]
+fn test_valid_cron_from_str() {
+    let expression = Cron::from_str("0-5,58 * * * * * /bin/sh -c echo 'hello world'\n");
+
+    expression.unwrap();
+    // assert!(expression.is_ok());
 }
